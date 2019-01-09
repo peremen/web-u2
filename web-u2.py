@@ -14,6 +14,7 @@ import faulthandler
 import logging
 import binascii
 import string
+from functools import reduce
 
 XXD_SET = string.ascii_letters + string.digits + string.punctuation
 
@@ -21,11 +22,6 @@ logger = logging.getLogger('web-u2')
 faulthandler.register(signal.SIGUSR1)
 
 hid_ = None
-
-def sigint_handler(signal, frame):
-    global hid_dev
-    usb.util.dispose_resources(self.hid_dev)
-    sys.exit(0)
 
 def hexint(string):
     if string[0:2] == '0x' or string[0:2] == '0X':
@@ -62,34 +58,87 @@ def usb_read(r, read_size):
 def usb_write(w, write_buf):
     w.write(write_buf)
 
-def init_webu2(h):
+def csum(pkt):
+    return 0xff & reduce((lambda x, y: x + y), pkt)
 
-    pkt1 = binascii.unhexlify(b'ff55f67eea9f52870a05dc300008241000004e010000000020cf4e0168fe120050aa00100100000020cf4e010000000000000000b4fc1200cd1200102ecf537d')
-    pkt2 = binascii.unhexlify(b'ff55f67eea9f52870a0500400008011a1a1a1a1a1a1a1a1a1a1ab48e493c1a1a351a1a1a3c1a1a1afd29fdfdf0c8b79aa2400a6a883c0000000000000000c1eb')
-    pkt3 = binascii.unhexlify(b'ff55f688ea9f5c870a0500f80108041a1a1a1a1a1a1a1a1a1a1ab48e493c1a1a351a1a1a3c1a1a1afd29fdfdf0c8b79aa2400a6a883c00000000000000007dbb')
+def body_csum(pkt):
+    return csum(pkt[8:62])
+
+def total_csum(pkt):
+    return 0xff & (body_csum(pkt) + csum(pkt[0:8]))
+
+def check_packet(pkt):
+    if len(pkt) != 64:
+        return False
+    if (pkt[0] == 0xff) and (pkt[1] == 0x55) and (pkt[62] == body_csum(pkt)) and (pkt[63] == total_csum(pkt)):
+        return True
+    else:
+         return False
+
+def build_packet(cmd_id, arg):
+    pkt = bytearray(64)
+    pkt[0] = 0xff
+    pkt[1] = 0x55
+
+    pkt[8] = 0xff & cmd_id 
+    pkt[9] = 0xff & len(arg)
+    if len(arg) > 0:
+        for i in range(min(len(arg), 52)):
+            pkt[10+i] = arg[i]
+
+    pkt[62] = csum(pkt[8:62])
+    pkt[63] = 0xff & (csum(pkt[8:62]) + csum(pkt[0:8]))
+
+    return bytes(pkt)
+
+def init_webu2(h):
+    pkt1 = build_packet(0x0a, binascii.unhexlify('dc30000824'))
+    pkt2 = build_packet(0x0a, binascii.unhexlify('0040000801'))
+    pkt3 = build_packet(0x0a, binascii.unhexlify('00f8010804'))
 
     h.write(pkt1)
     buf = h.read(0x40)
+    print(check_packet(buf))
     xxd(buf, True)
 
     h.write(pkt2)
     buf = h.read(0x40)
+    print(check_packet(buf))
     xxd(buf, True)
 
     h.write(pkt3)
     buf = h.read(0x40)
+    print(check_packet(buf))
     xxd(buf, True)
 
+def parse_response(buf):
+    if not check_packet(buf):
+        return
+    ts = buf[2:8]
+    cmd = buf[8]
+    arglen = buf[9]
+    arg = buf[10:10 + arglen]
+
+    if cmd == 0x1a:
+        results = struct.unpack('<fffffffffff', bytes(arg))
+        # Voltage, Current, Current, ?, Wattage, D+ Voltage, D- Voltage, Internal Temperature, ?, ?, ?
+        print(' '.join(['{:.05f}'.format(x) for x in results]))
+
 def run_webu2(h):
-    pkt1 = binascii.unhexlify(b'ff5511f1e9ac29d70300000020cf7e01000000000000000088f11200cd1200102ecf7e01acf212004030001048610010ffffffff88f112003210001020cf1803')
+    pkt1 = build_packet(0x03, b'')
+    pkt2 = build_packet(0x1a, binascii.unhexlify('0a'))
     h.write(pkt1)
     buf = h.read(0x40)
     xxd(buf, True)
 
-    pkt2 = binascii.unhexlify(b'ff5511056aac3dd71a010a75d2be0de0d000fd6330e31f000000000000000000000000000000000000000000dcfee6022637239744ffe602bd06ca75d0004fe3')
     h.write(pkt2)
-    buf = h.read(0x40)
-    xxd(buf, True)
+    while True:
+        buf = h.read(0x40)
+        if len(buf) == 0x40:
+            parse_response(buf)
+            #xxd(buf, True)
+        else:
+            h.write(pkt2)
 
 if __name__ == '__main__':
 
@@ -132,7 +181,7 @@ if __name__ == '__main__':
             h = hid.device()
             h.open(0x0716, 0x5030)
         except OSError as e:
-            print(e)
+            print("Error locating WEB-U2 device: %s" % e)
             sys.exit(0)
 
     print("Found WEB-U2 device")
@@ -141,4 +190,5 @@ if __name__ == '__main__':
     print("Serial: %s" % h.get_serial_number_string())
 
     init_webu2(h)
-    #run_webu2(h)
+    h.set_nonblocking(1)
+    run_webu2(h)
