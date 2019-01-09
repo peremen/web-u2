@@ -21,8 +21,6 @@ XXD_SET = string.ascii_letters + string.digits + string.punctuation
 logger = logging.getLogger('web-u2')
 faulthandler.register(signal.SIGUSR1)
 
-hid_ = None
-
 def hexint(string):
     if string[0:2] == '0x' or string[0:2] == '0X':
         return int(string[2:], 16)
@@ -83,7 +81,7 @@ def build_packet(cmd_id, arg):
     pkt[8] = 0xff & cmd_id 
     pkt[9] = 0xff & len(arg)
     if len(arg) > 0:
-        for i in range(min(len(arg), 52)):
+        for i in range(min(len(arg), 51)):
             pkt[10+i] = arg[i]
 
     pkt[62] = csum(pkt[8:62])
@@ -159,7 +157,7 @@ if __name__ == '__main__':
     #data_group.add_argument('--hostname-sim2', help='Change host name/IP to emit GSMTAP packets for SIM 2', type=str, default='127.0.0.2')
 
     args = parser.parse_args()
-    hid_dev = None
+    h = None
 
     # Device preparation
     if args.address:
@@ -172,7 +170,7 @@ if __name__ == '__main__':
 
         for d in hid.enumerate():
             if d.path == addr.format:
-                hid_dev = d
+                h = d
                 break
     else:
         # USB VID:PID = 0716:5030
